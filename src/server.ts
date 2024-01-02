@@ -1,15 +1,14 @@
 import { SpanKind, trace } from '@opentelemetry/api'
 import { name, version } from '../package.json'
-import { Router, RouterOptions } from './router'
+import { Router, type RouterOptions } from './router'
 import { Data } from './data'
 import { Reply } from './reply'
 import { getPathnameParameters } from './utils'
 import { schemaValidation } from './schemaValidation'
 import { Method } from './types'
-import { cors, CorsOptions, preflightHandler } from './cors'
+import { cors, type CorsOptions, preflightHandler } from './cors'
 import { logger, recordException } from './logger'
-import { next } from './middleware'
-import type { MiddlewareList } from './middleware'
+import { next, type MiddlewareList, type Middleware, type MiddlewareHandler } from './middleware'
 import type { CookiesOptions } from './cookies'
 
 
@@ -72,23 +71,15 @@ export class Server<
 
         span.setAttribute('isDurableObject', isDurableObject)
 
+        const calledMiddleware = new Set<MiddlewareHandler>()
+
         // Run global before middleware
-        if (this.options.before) {
-          for (const mw of this.options.before) {
-            await this.tracer.startActiveSpan(
-              `comet middleware ${mw.name}`, {
-                attributes: {
-                  type: 'global-before'
-                }
-              },
-              async span => {
-                await mw.handler(input)
-                span.end()
-              }
-            )
-            if (event.reply.sent) break
-          }
-        }
+        await this.handleMiddleware({
+          middleware: this.options.before,
+          called: calledMiddleware,
+          input,
+          type: 'global-before'
+        })
 
         // Run CORS middleware
         if (!event.reply.sent) {
@@ -118,7 +109,7 @@ export class Server<
 
               // Find the route
               const route = this.router.find(event.pathname, event.method, compatibilityDate)
-              // eslint-disable-next-line unicorn/no-negated-condition
+
               if (!route) {
 
                 // Use built-in preflight handler for preflight requests, return 404 otherwise
@@ -137,22 +128,12 @@ export class Server<
                 if (!event.reply.sent) schemaValidation(route).handler(input)
 
                 // Run local before middleware
-                if (route.before) {
-                  for (const mw of route.before) {
-                    await this.tracer.startActiveSpan(
-                      `comet middleware ${mw.name}`, {
-                        attributes: {
-                          type: 'local-before'
-                        }
-                      },
-                      async span => {
-                        await mw.handler(input)
-                        span.end()
-                      }
-                    )
-                    if (event.reply.sent) break
-                  }
-                }
+                await this.handleMiddleware({
+                  middleware: route.before,
+                  called: calledMiddleware,
+                  input,
+                  type: 'local-before'
+                })
 
                 // Run route handler
                 if (!event.reply.sent) {
@@ -170,78 +151,107 @@ export class Server<
                 }
 
                 // Run local after middleware
-                if (route.after) {
-                  if (isDurableObject) {
-                    for (const mw of route.after) {
-                      await this.tracer.startActiveSpan(
-                        `comet middleware ${mw.name}`, {
-                          attributes: {
-                            type: 'local-after'
-                          }
-                        },
-                        async span => {
-                          await mw.handler(input)
-                          span.end()
-                        }
-                      )
-                    }
-                  } else {
-                    ctxOrState.waitUntil(Promise.allSettled(route.after.map(async mw => {
-                      const span = this.tracer.startSpan(`comet middleware ${mw.name}`, {
-                        attributes: {
-                          type: 'local-after'
-                        }
-                      })
-                      await mw.handler(input)
-                      span.end()
-                    })))
-                  }
-                }
+                await this.handleMiddleware({
+                  middleware: route.after,
+                  called: calledMiddleware,
+                  input,
+                  type: 'local-after'
+                })
               }
             }
+
             span.end()
           })
         }
 
         // Run global after middleware
-        if (this.options.after) {
-          if (isDurableObject) {
-            for (const mw of this.options.after) {
-              await this.tracer.startActiveSpan(
-                `comet middleware ${mw.name}`, {
-                  attributes: {
-                    type: 'global-after'
-                  }
-                },
-                async span => {
-                  await mw.handler(input)
-                  span.end()
-                }
-              )
-            }
-          } else {
-            ctxOrState.waitUntil(Promise.allSettled(this.options.after.map(async mw => {
-              const span = this.tracer.startSpan(`comet middleware ${mw.name}`, {
-                attributes: {
-                  type: 'global-after'
-                }
-              })
-              await mw.handler(input)
-              span.end()
-            })))
-          }
-        }
+        await this.handleMiddleware({
+          middleware: this.options.after,
+          called: calledMiddleware,
+          input,
+          type: 'global-after'
+        })
 
         // Construct response from reply
         span.end()
+
         return await Reply.toResponse(event.reply, this.options)
       } catch (error) {
         recordException('[Comet] Failed to handle request.')
         recordException(error)
         span.end()
+
         return new Response(null, { status: 500 })
       }
     })
+  }
+
+  private async handleMiddleware({
+    middleware,
+    called,
+    input,
+    type
+  }: {
+    called: Set<Middleware<any>['handler']>
+    middleware: readonly Middleware<any>[] | undefined
+    input: Parameters<MiddlewareHandler>[0]
+    type: 'global-before' | 'local-before' | 'local-after' | 'global-after'
+  }) {
+    if (!middleware) return
+
+    for (const mw of middleware) {
+      if ((type === 'global-before' || type === 'local-before') && input.event.reply.sent) {
+        return
+      }
+
+      await this.runMiddleware({
+        mw,
+        called,
+        input,
+        type
+      })
+    }
+  }
+
+  private async runMiddleware({
+    mw,
+    called,
+    input,
+    type
+  }: {
+    mw: Middleware<any>
+    called: Set<Middleware<any>['handler']>
+    input: Parameters<MiddlewareHandler>[0]
+    type: 'global-before' | 'local-before' | 'local-after' | 'global-after'
+  }) {
+
+    // Prevent middleware from being called twice
+    // Add before actually calling to prevent infinite loops
+    if (called.has(mw.handler)) return
+    called.add(mw.handler)
+
+    await this.handleMiddleware({
+      middleware: mw.requires,
+      called,
+      input,
+      type
+    })
+
+    if ((type === 'global-before' || type === 'local-before') && input.event.reply.sent) {
+      return
+    }
+
+    await this.tracer.startActiveSpan(
+      typeof mw.name === 'string' ? `comet middleware ${mw.name}` : 'comet middleware', {
+        attributes: {
+          type
+        }
+      },
+      async span => {
+        await mw.handler(input)
+        span.end()
+      }
+    )
   }
 
   public static getRouter<
