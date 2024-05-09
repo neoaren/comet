@@ -26,6 +26,7 @@ type RoutePathParams<T extends string> = ZodObject<{ [key in Pipe<T, [
   Strings.Split<'/'>,
   Tuples.Filter<Strings.StartsWith<':'>>,
   Tuples.Map<Strings.TrimLeft<':'>>,
+  Tuples.Map<Strings.TrimRight<'+'>>,
   Tuples.ToUnion
 ]>]: ZodType }>
 type RouteMethod = Method | keyof typeof Method
