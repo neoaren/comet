@@ -7,16 +7,12 @@ import {
   isValidPathname
 } from './utils'
 import { type Logger, recordException } from './logger'
-import { type Reply, type ReplyFrom, Status } from './reply'
+import { type Reply, ReplyFactory, Status } from './reply'
 import { type Data } from './data'
 import type { ExtensionsFrom, MiddlewareList } from './middleware'
 import type { TypeOf, ZodObject, ZodType } from 'zod'
 import type { Pipe, Strings, Tuples } from 'hotscript'
 
-
-type RouteContext<IsDo extends boolean> = IsDo extends true
-  ? { isDurableObject: true; state: DurableObjectState }
-  : { isDurableObject: false; ctx: ExecutionContext }
 
 type BodyFromSchema<T> = { body: T extends ZodType ? TypeOf<T> : unknown }
 type ParamsFromSchema<T> = { params: T extends ZodType ? TypeOf<T> : Partial<Record<string, string>> }
@@ -91,8 +87,9 @@ export class Router<
       query?: Query
     },
     handler: (input: {
-      event: Data & RouteContext<IsDo> & RouteParams<Body, Params, Query> & { reply: ReplyFrom<Replies> }
+      event: Data & RouteParams<Body, Params, Query> & { reply: ReplyFactory }
         & ExtensionsFrom<SBefore> & ExtensionsFrom<RBefore>
+      ctx: IsDo extends true ? DurableObjectState : ExecutionContext
       env: Environment
       logger: Logger
     }) => MaybePromise<Reply>

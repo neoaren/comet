@@ -2,7 +2,7 @@ import { SpanKind, trace } from '@opentelemetry/api'
 import { name, version } from '../package.json'
 import { Router, type RouterOptions } from './router'
 import { Data } from './data'
-import { Reply } from './reply'
+import { Reply, ReplyFactory } from './reply'
 import { getPathnameParameters } from './utils'
 import { schemaValidation } from './schemaValidation'
 import { Method } from './types'
@@ -12,7 +12,7 @@ import {
   next,
   type MiddlewareList,
   type MiddlewareHandler,
-  type Middleware
+  type Middleware, NextData
 } from './middleware'
 import type { CookiesOptions } from './cookies'
 import { CometError, CometErrorHandler, type ErrorHandler, ErrorType } from './error'
@@ -65,14 +65,18 @@ export class Server<
         // Initialize router
         this.router.init()
 
+        let reply: Reply | undefined = undefined
+
         // Construct event from request data, reply, and context / state
         const data = await Data.fromRequest(request, this.options, this.options.name)
 
-        const reply = new Reply()
         const isDurableObject = 'id' in ctxOrState
         const event = {
-          ...data, reply, next, isDurableObject,
-          ...(isDurableObject ? { state: ctxOrState } : { ctx: ctxOrState })
+          ...data,
+          reply: new ReplyFactory(),
+          next,
+          isDurableObject,
+          ctx: ctxOrState,
         }
         input.event = event
 
@@ -86,23 +90,25 @@ export class Server<
         if (this.options.before) {
           for (const mw of this.options.before) {
             await trace.getTracer(name, version).startActiveSpan(
-              `Comet Middleware${mw.name ? ` ${mw.name}` : ''}`, {
+              `Comet Middleware${mw.options.name ? ` ${mw.options.name}` : ''}`, {
                 attributes: {
-                  'comet.mw.name': mw.name,
+                  'comet.mw.name': mw.options.name,
                   'comet.mw.type': 'global-before'
                 }
               },
               async span => {
-                await mw.handler(input)
+                const result = await mw.handler(input)
+                if (result instanceof Reply) reply = result
+                if (result instanceof NextData) Object.assign(input.event, result.data)
                 span.end()
               }
             )
-            if (event.reply.sent) break
+            if (reply) break
           }
         }
 
         // Run CORS middleware
-        if (!event.reply.sent) {
+        if (!reply) {
           await trace.getTracer(name, version).startActiveSpan(
             'Comet CORS Middleware', {
               attributes: {
@@ -120,7 +126,7 @@ export class Server<
         }
 
         // Main logic
-        if (!event.reply.sent) {
+        if (!reply) {
 
           await trace.getTracer(name, version).startActiveSpan('Comet Routing', {
             attributes: {

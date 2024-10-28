@@ -3,7 +3,8 @@ import { z } from 'zod'
 
 export const logger = (message: string) => middleware(({ event }) => {
   console.log(message)
-  return event.next()
+
+  return event.next({ foo: 'bar' })
 })
 
 export const token = middleware({

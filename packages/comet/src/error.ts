@@ -1,6 +1,6 @@
 import { trace } from '@opentelemetry/api'
 import { name, version } from '../package.json'
-import { Reply, type ReplyFrom, Status } from './reply'
+import { Reply, ReplyFactory, Status } from './reply'
 import { type Logger, recordException } from './logger'
 import type { ZodType } from 'zod'
 import type { Data } from './data'
@@ -13,7 +13,7 @@ export type ErrorHandler<
   Requires extends MiddlewareList,
   Replies extends Partial<Record<Status, ZodType>> | undefined = undefined
 > = (input: {
-  event: Data & { reply: ReplyFrom<Replies>; error: Error } & MiddlewareContext & Partial<ExtensionsFrom<Requires>>
+  event: Data & { reply: ReplyFactory; error: Error } & MiddlewareContext & Partial<ExtensionsFrom<Requires>>
   env: Environment
   logger: Logger
   error: Error

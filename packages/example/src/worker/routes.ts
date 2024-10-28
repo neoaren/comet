@@ -1,16 +1,34 @@
-import { GET, POST, PUT, Status } from '@neoaren/comet'
+import { GET, Method, POST, PUT, Status } from '@neoaren/comet'
 import { z } from 'zod'
 import { workerRouter } from './server'
 import { auth, logger, never, perm, mwError } from '../middleware'
 
+
+/**
+ * Test asd
+ * @summary Test route
+ * @description Test route with a very long
+ * description that should be wrapped
+ * @see https://example.com asd
+ */
 workerRouter.route({
   pathname: '/test',
-  method: GET
+  method: 'GET'
 }, ({ event }) => {
   //
   event.reply
   //
-  return event.reply.ok(123)
+  return event.reply.ok()
+})
+
+workerRouter.route({
+  pathname: '/test2',
+  method: Method.GET
+}, ({ event }) => {
+  //
+  event.reply
+  //
+  return event.reply.ok('123')
 })
 
 workerRouter.route({
